@@ -5,10 +5,25 @@ import datetime
 import random
 import os
 import time
+from flask import Flask
+from threading import Thread
+
+# ---------- WEB SERVER ----------
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running"
+
+def run_web():
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+Thread(target=run_web).start()
 
 # ---------- CONFIG ----------
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))  # 빠른 명령어 등록용 (선택)
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 
 DB_PATH = "/data/economy.db" if os.path.exists("/data") else "economy.db"
 
@@ -17,7 +32,7 @@ SALARY_COOLDOWN = 10
 ATTENDANCE_AMOUNT = 500000
 
 # ---------- DB ----------
-DB = sqlite3.connect(DB_PATH)
+DB = sqlite3.connect(DB_PATH, check_same_thread=False)
 CUR = DB.cursor()
 
 CUR.execute("CREATE TABLE IF NOT EXISTS money (uid INTEGER PRIMARY KEY, bal INTEGER)")
@@ -61,7 +76,7 @@ async def on_ready():
             await tree.sync()
         print(f"✅ 로그인: {bot.user}")
     except Exception as e:
-        print("❌ 커맨드 동기화 실패:", e)
+        print("❌ 동기화 실패:", e)
 
 # ---------- COMMANDS ----------
 @tree.command(name="잔액", description="잔액 확인")
@@ -76,7 +91,7 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
     await interaction.response.send_message(embed=embed)
 
 
-@tree.command(name="송금", description="유저에게 돈 보내기")
+@tree.command(name="송금", description="송금")
 async def transfer(interaction: discord.Interaction, user: discord.Member, amount: int):
 
     if user.bot or user.id == interaction.user.id:
@@ -99,7 +114,7 @@ async def transfer(interaction: discord.Interaction, user: discord.Member, amoun
     await interaction.response.send_message(embed=embed)
 
 
-@tree.command(name="출석", description="하루 1회 보상")
+@tree.command(name="출석", description="출석 체크")
 async def attendance(interaction: discord.Interaction):
 
     CUR.execute("SELECT date FROM attendance WHERE uid=?", (interaction.user.id,))
@@ -121,7 +136,7 @@ async def attendance(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@tree.command(name="월급", description="쿨타임 월급")
+@tree.command(name="월급", description="월급 받기")
 async def salary(interaction: discord.Interaction):
 
     now = datetime.datetime.utcnow().timestamp()
@@ -168,8 +183,7 @@ async def odd_even(interaction: discord.Interaction, choice: str, bet: int):
     embed = discord.Embed(title="🎲 결과", description=text, color=0xf1c40f)
     await interaction.response.send_message(embed=embed)
 
-
-# ---------- RUN LOOP ----------
+# ---------- RUN ----------
 if not TOKEN:
     raise Exception("❌ DISCORD_TOKEN 없음")
 
