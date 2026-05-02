@@ -8,7 +8,7 @@ import time
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ---------- 🌐 WEB SERVER (포트 유지) ----------
+# ---------- 🌐 WEB SERVER ----------
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -37,9 +37,18 @@ ATTENDANCE_AMOUNT = 500000
 DB = sqlite3.connect(DB_PATH, check_same_thread=False)
 CUR = DB.cursor()
 
+# ⚡ DB 최적화
+CUR.execute("PRAGMA journal_mode=WAL;")
+CUR.execute("PRAGMA synchronous=NORMAL;")
+CUR.execute("PRAGMA temp_store=MEMORY;")
+CUR.execute("PRAGMA cache_size=-20000;")
+
 CUR.execute("CREATE TABLE IF NOT EXISTS money (uid INTEGER PRIMARY KEY, bal INTEGER)")
 CUR.execute("CREATE TABLE IF NOT EXISTS attendance (uid INTEGER PRIMARY KEY, date TEXT)")
 DB.commit()
+
+# ---------- CACHE ----------
+money_cache = {}
 
 # ---------- BOT ----------
 intents = discord.Intents.default()
@@ -50,13 +59,19 @@ salary_cd = {}
 
 # ---------- UTIL ----------
 def money(uid):
+    if uid in money_cache:
+        return money_cache[uid]
+
     CUR.execute("SELECT bal FROM money WHERE uid=?", (uid,))
     r = CUR.fetchone()
-    return r[0] if r else 0
+    val = r[0] if r else 0
+    money_cache[uid] = val
+    return val
 
 def set_money(uid, v):
-    CUR.execute("REPLACE INTO money VALUES (?,?)", (uid, max(v, 0)))
-    DB.commit()
+    v = max(v, 0)
+    CUR.execute("REPLACE INTO money VALUES (?,?)", (uid, v))
+    money_cache[uid] = v
 
 def add_money(uid, v):
     set_money(uid, money(uid) + v)
@@ -87,80 +102,93 @@ async def on_ready():
 
 # ---------- COMMANDS ----------
 
-# 💰 잔액
 @tree.command(name="잔액", description="잔액 확인")
 async def balance(i: discord.Interaction, user: discord.Member = None):
+    await i.response.defer()
     user = user or i.user
-    await i.response.send_message(
+
+    await i.followup.send(
         embed=embed("💰 잔액", f"{user.mention}\n`{money(user.id):,}원`", 0x2ecc71)
     )
 
-# 💸 송금
+
 @tree.command(name="송금", description="돈 보내기")
 async def transfer(i: discord.Interaction, user: discord.Member, amount: int):
+    await i.response.defer(ephemeral=True)
+
     if user.bot or user.id == i.user.id:
-        return await i.response.send_message("❌ 대상 오류", ephemeral=True)
+        return await i.followup.send("❌ 대상 오류")
 
     if amount <= 0:
-        return await i.response.send_message("❌ 금액 오류", ephemeral=True)
+        return await i.followup.send("❌ 금액 오류")
 
     if money(i.user.id) < amount:
-        return await i.response.send_message("❌ 잔액 부족", ephemeral=True)
+        return await i.followup.send("❌ 잔액 부족")
 
     remove_money(i.user.id, amount)
     add_money(user.id, amount)
 
-    await i.response.send_message(
+    DB.commit()
+
+    await i.followup.send(
         embed=embed("💸 송금 완료",
         f"{i.user.mention} → {user.mention}\n`{amount:,}원`", 0x3498db)
     )
 
-# 📅 출석
+
 @tree.command(name="출석", description="하루 1회 보상")
 async def attendance(i: discord.Interaction):
+    await i.response.defer()
+
     CUR.execute("SELECT date FROM attendance WHERE uid=?", (i.user.id,))
     r = CUR.fetchone()
 
     if r and r[0] == today():
-        return await i.response.send_message("❌ 이미 출석함", ephemeral=True)
+        return await i.followup.send("❌ 이미 출석함")
 
     CUR.execute("REPLACE INTO attendance VALUES (?,?)", (i.user.id, today()))
-    DB.commit()
     add_money(i.user.id, ATTENDANCE_AMOUNT)
 
-    await i.response.send_message(
+    DB.commit()
+
+    await i.followup.send(
         embed=embed("📅 출석 완료", f"+{ATTENDANCE_AMOUNT:,}원", 0x57f287)
     )
 
-# 💼 월급
+
 @tree.command(name="월급", description="쿨타임 월급")
 async def salary(i: discord.Interaction):
+    await i.response.defer()
+
     now = datetime.datetime.utcnow().timestamp()
     last = salary_cd.get(i.user.id, 0)
 
     if now - last < SALARY_COOLDOWN:
-        return await i.response.send_message("⏳ 쿨타임", ephemeral=True)
+        return await i.followup.send("⏳ 쿨타임")
 
     salary_cd[i.user.id] = now
     add_money(i.user.id, SALARY_AMOUNT)
 
-    await i.response.send_message(
+    DB.commit()
+
+    await i.followup.send(
         embed=embed("💼 월급 지급", f"+{SALARY_AMOUNT:,}원", 0x9b59b6)
     )
 
-# 🎲 홀짝
+
 @tree.command(name="홀짝", description="홀짝 게임")
 @app_commands.describe(choice="홀 또는 짝", bet="배팅 금액")
 async def odd_even(i: discord.Interaction, choice: str, bet: int):
+    await i.response.defer()
 
     if choice not in ["홀", "짝"]:
-        return await i.response.send_message("❌ 홀/짝만 가능", ephemeral=True)
+        return await i.followup.send("❌ 홀/짝만 가능")
 
     if bet <= 0:
-        return await i.response.send_message("❌ 금액 오류", ephemeral=True)
+        return await i.followup.send("❌ 금액 오류")
 
     if money(i.user.id) < bet:
-        return await i.response.send_message("❌ 잔액 부족", ephemeral=True)
+        return await i.followup.send("❌ 잔액 부족")
 
     num = random.randint(1, 100)
     result = "홀" if num % 2 else "짝"
@@ -173,7 +201,9 @@ async def odd_even(i: discord.Interaction, choice: str, bet: int):
         remove_money(i.user.id, bet)
         msg = f"💥 패배!\n숫자: {num} ({result})\n-{bet:,}원"
 
-    await i.response.send_message(
+    DB.commit()
+
+    await i.followup.send(
         embed=embed("🎲 홀짝 결과", msg, 0xf1c40f)
     )
 
